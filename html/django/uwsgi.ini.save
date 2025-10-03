@@ -1,0 +1,32 @@
+[uwsgi]
+
+#http = 0.0.0.0:8001
+
+# Django-related settings
+# the base directory (full path)
+chdir = /var/www/html/django
+# the virtualenv (full path)
+home = /var/www/html/django/django_env
+# Django's wsgi file
+#module = LINE_APP.wsgi:application
+module = LINE_APP.wsgi
+
+# process-related settings
+master = True
+processes = 10
+threads = 10
+enable-threads = true
+socket=/run/uwsgi.sock
+chmod-socket = 666
+# clear environment on exit
+vacuum = True
+# respawn processes after serving 5000 requests
+max-requests = 5000
+daemonize = uwsgi.log
+#這個buffer-size可以設定處裡Requeset Url的Buffer大小，預設4096當Buffer爆炸的時候，Request會被skip
+buffer-size = 8192
+
+die-on-term = True
+pidfile = uwsgi.pid
+#plugins = python
+pythonpath = /home/apmathadmin/.local/lib/python3.9/site-packages

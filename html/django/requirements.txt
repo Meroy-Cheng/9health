@@ -1,0 +1,12 @@
+Django
+python-dotenv
+dataframe-image
+pandas
+matplotlib
+openai
+Pillow
+pydantic
+line-bot-sdk
+mysqlclient
+pymysql
+pygsheets

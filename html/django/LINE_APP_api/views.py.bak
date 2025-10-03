@@ -1,0 +1,272 @@
+import datetime
+from . import my_db
+#import logging
+
+from django.conf import settings
+from django.http import HttpResponse, HttpResponseBadRequest, HttpResponseForbidden
+from django.views.decorators.csrf import csrf_exempt
+
+from linebot import LineBotApi, WebhookParser
+# https://medium.com/@pearl3904/linebot%E5%AF%A6%E4%BD%9C-%E6%A9%9F%E5%99%A8%E4%BA%BA%E5%82%B3%E9%80%81%E7%9A%84%E8%A8%8A%E6%81%AF%E7%A8%AE%E9%A1%9E%E5%A4%A7%E5%BD%99%E6%95%B4-89201c2167fd#c258
+# from linebot import LineBotApi, WebhookHandler
+from linebot.exceptions import InvalidSignatureError, LineBotApiError
+from linebot.models import (
+    MessageEvent, TextSendMessage, StickerSendMessage, TemplateSendMessage,
+    ConfirmTemplate, MessageAction, ButtonsTemplate, URIAction,
+    ImageSendMessage, CarouselTemplate, CarouselColumn,
+    #  QuickReply, QuickReplyButton,
+    # PostbackAction, DatetimePickerAction,
+)
+
+line_bot_api = LineBotApi(settings.LINE_CHANNEL_ACCESS_TOKEN)
+parser = WebhookParser(settings.LINE_CHANNEL_KEY)
+# handler = WebhookHandler(settings.LINE_CHANNEL_KEY)
+
+flag_inp_phone_number = False
+url = "https://9health.apmath.fcu.edu.tw"
+
+def input_phone_number_and_2DB(msg, user_id, DB_cls):    # 輸入電話號碼
+    global flag_inp_phone_number
+    #print('電話flag', flag_inp_phone_number)
+    #return TextSendMessage(text=f'輸入的是 {msg}，長度={len(msg)}')
+
+    # Todo: a bug -> 0920370048 (似乎是太多0造成的?)
+    if len(msg) != 10:
+        flag_inp_phone_number = True
+        return TextSendMessage(text='手機號碼（例如：0918123456）的長度錯誤，請重新輸入。')
+    elif msg[:2] != '09':
+        flag_inp_phone_number = True
+        return TextSendMessage(text='手機號碼（例如：0918123456）的前兩碼為09，請重新輸入。')
+    elif msg.isnumeric():   # Check if all characters are numeric
+        flag_inp_phone_number = False
+        curr_time = datetime.datetime.now().replace(microsecond=0).strftime("%Y-%m-%d %H:%M:%S")
+
+        if DB_cls.check_user_exist(user_id):
+            DB_cls.update_one_by_id('User_Information', 'Phone_number', msg, user_id)
+            DB_cls.update_one_by_id('User_Information', 'Flag_update_data', 1, user_id)
+        else:
+            data = [user_id, msg, 1, curr_time, 0, curr_time]
+            DB_cls.insert_one('User_Information', data)
+
+        buttons_template = ButtonsTemplate(
+            title='點擊按鈕可開啟問卷網頁',
+            # thumbnail_image_url='https://storage.googleapis.com/你的圖片連結.png',
+            text='要瀏覽問卷首頁的「隱私權條款」',
+            actions = [
+                # DatetimePickerAction(label='選擇日期', data='date', mode='date')
+                # PostbackAction(label='打開鍵盤', data='button_clicked', text="您的輸入：", inputOption="openKeyboard")
+                URIAction(label='前往填寫問卷', uri='https://ppt.cc/fNWiSx')
+                ]
+        )
+        return TemplateSendMessage(alt_text='出生年', template=buttons_template)
+    else:
+        flag_inp_phone_number = True
+        return TextSendMessage(text='手機號碼（例如：0918123456）錯誤，請重新輸入。')
+
+def show_comment(type_, user_id, DB_cls):
+    if type_ == "感興趣主題":
+        item = DB_cls.select_one_by_id('User_Questionnaire', '健康目標', user_id, order='Time_fill_out')
+        return f"您感興趣主題是『{item}』，建議如下：\n {DB_cls.select_one_by_id(type_, item)}"
+    elif type_ == "日常小困擾":
+        item = DB_cls.select_one_by_id('User_Questionnaire', '日常小困擾', user_id, order='Time_fill_out')
+        return f"您日常小困擾是『{item}』，建議如下：\n {DB_cls.select_one_by_id(type_, item)}"
+    elif type_ == "常吃的飲食":
+        item = DB_cls.select_one_by_id('User_Questionnaire', '常吃飲食搭配', user_id, order='Time_fill_out')
+        lst = [x.strip() for x in item.split(",")]
+        comment = f"您常吃的飲食種類有 {len(lst)} 項，建議如下：\n\n"
+        for x in lst:
+            comment = comment + DB_cls.select_one_by_id(type_, x) + "\n"
+
+        return comment
+
+def handle_text_message(msg, user_id, DB_cls):
+    global flag_inp_phone_number
+    #print("===訊息:", msg)
+
+    if msg == '!文字':
+        text_msg = TextSendMessage(text='~ 測試：文字訊息 ~')
+        sticker_msg = StickerSendMessage(package_id=6136, sticker_id=10551378)
+        return [text_msg, sticker_msg]
+
+    # 填問卷(確認模板)
+    elif msg == '＞＞填問卷 ':    # 確認模板只能有兩個選項！
+        confirm_template = ConfirmTemplate(
+            text='能請您協助「營養及飲食習慣調查問卷」嗎？',
+            actions=[
+                MessageAction(label='是', text='＞＞進行調查問卷：是 '),
+                MessageAction(label='否', text='＞＞進行調查問卷：否 ')
+            ]
+        )
+        return TemplateSendMessage(alt_text='是否進行問卷', template=confirm_template)
+    elif msg == '＞＞進行調查問卷：是 ':
+        flag_inp_phone_number = True
+        #print('===電話flag:', flag_inp_phone_number)
+        return TextSendMessage(text='感謝您的配合，請先輸入手機號碼（例如：0918123456）。此號碼僅做連結調查問卷之用，請安心輸入。')
+    elif msg == '＞＞進行調查問卷：否 ':
+        flag_inp_phone_number = False
+        return TextSendMessage(text='實在太可惜了！問卷填答結果可協助我們提供更好的服務。')
+    elif flag_inp_phone_number:  # 輸入電話號碼
+        return input_phone_number_and_2DB(msg, user_id, DB_cls)
+    elif (len(msg)==10) and (msg[0]=='0'):  # 輸入電話號碼
+        return input_phone_number_and_2DB(msg, user_id, DB_cls)
+
+    # 看建議(輪播模板)
+    elif msg == '＞＞看建議 ':    # 輪播模板(Carousel Template)
+        # check user data (retrieve from Google or not)
+        if not DB_cls.check_update_user_questionnaire(user_id):
+            return TextSendMessage(text='~ 請先填寫問卷([圖文選單]->[填問卷]) ~')
+
+        carousel_template = CarouselTemplate(columns=[
+            CarouselColumn(
+                text='依問卷填答結果，給予個人化建議',  # 這個一定要有
+                #title='感興趣主題',
+                thumbnail_image_url='https://selab-service.iecs.fcu.edu.tw/9health/static/CarouselTemplate_img1.jpg',
+                actions=[
+                    MessageAction(label='感興趣主題', text='＞＞看建議：感興趣主題 ')
+                ]
+            ),
+            CarouselColumn(
+                text='依問卷填答結果，給予個人化建議',
+                #title='常吃的飲食',
+                thumbnail_image_url='https://selab-service.iecs.fcu.edu.tw/9health/static/CarouselTemplate_img2.jpg',
+                actions=[
+                    MessageAction(label='常吃的飲食', text='＞＞看建議：常吃的飲食 ')
+                ]
+            ),
+            CarouselColumn(
+                text='依問卷填答結果，給予個人化建議',
+                #title='日常小困擾',
+                thumbnail_image_url='https://selab-service.iecs.fcu.edu.tw/9health/static/CarouselTemplate_img3.jpg',
+                actions=[
+                    MessageAction(label='日常小困擾', text='＞＞看建議：日常小困擾 ')
+                ]
+            )
+        ])
+        return TemplateSendMessage(alt_text='依問卷填答結果的建議', template=carousel_template)
+    elif msg == '＞＞看建議：感興趣主題 ':
+        return TextSendMessage(text=f"{show_comment('感興趣主題', user_id, DB_cls)}")
+    elif msg == '＞＞看建議：常吃的飲食 ':
+        return TextSendMessage(text=f"{show_comment('常吃的飲食', user_id, DB_cls)}")
+    elif msg == '＞＞看建議：日常小困擾 ':
+        return TextSendMessage(text=f"{show_comment('日常小困擾', user_id, DB_cls)}")
+
+    # 估熱量(ChatGPT)
+    elif msg == '＞＞估熱量 ':
+        if not DB_cls.check_update_user_questionnaire(user_id):
+            return TextSendMessage(text='~ 請先填寫問卷([圖文選單]->[填問卷]) ~')
+
+        return TextSendMessage(text='＞＞請上傳一張餐食圖片 ')
+        # text_msg = TextSendMessage(text='本功能未上線，敬請期待')
+        # sticker_msg = StickerSendMessage(package_id=8525, sticker_id=16581290)
+        # return [text_msg, sticker_msg]
+
+    return TextSendMessage(text='~ 請點選底下的 [圖文選單] ~')
+    #return False
+
+
+@csrf_exempt
+def callback(request):
+    if request.method == 'POST':
+        signature = request.META['HTTP_X_LINE_SIGNATURE']
+        body = request.body.decode('utf-8')
+        DB = my_db.cls_db_helper(url)
+        #logger = logging.getLogger(__name__) # Get an instance of a logger
+
+        try:
+            events = parser.parse(body, signature)
+        except InvalidSignatureError:
+            print("Invalid signature. Please check your channel access token/channel secret.")
+            return HttpResponseForbidden()
+        except LineBotApiError:
+            print("Line Bot Api Error.")
+            return HttpResponseBadRequest()
+
+        for event in events:
+            if isinstance(event, MessageEvent):
+                # https://a129065860.medium.com/%E5%AD%B8%E7%BF%92%E7%B4%80%E9%8C%84-%E5%BB%BA%E7%AB%8Bline%E5%AE%98%E6%96%B9%E5%B8%B3%E8%99%9F-python%E4%BD%BF%E7%94%A8django%E4%B8%B2line-bot-api-4998f483bbee
+                user_id = event.source.user_id
+                profile = line_bot_api.get_profile(user_id)
+                user_name = profile.display_name
+                curr_time = datetime.datetime.now().replace(microsecond=0)
+
+                if DB.check_user_exist(user_id):
+                    DB.update_one_by_id('User_Information', 'Time_send_msg', curr_time.strftime("%Y-%m-%d %H:%M:%S"), user_id)
+
+                if event.message.type == "text":
+                    reply_msg = handle_text_message(event.message.text, user_id, DB)
+                    if reply_msg:
+                        line_bot_api.reply_message(event.reply_token, reply_msg)
+
+                elif event.message.type == "image":
+                    if not DB.check_update_user_questionnaire(user_id):
+                        return TextSendMessage(text='~ 請先填寫問卷([圖文選單]->[填問卷]) ~')
+                        
+                    image_name = DB.process_image(line_bot_api, event, user_id, curr_time)
+                    # result_img_name = image_name 
+                    result_img_name = DB.inquire_ChatGPT(image_name, user_id, curr_time.strftime("%Y-%m-%d %H:%M:%S"))
+
+                    # from matplotlib import font_manager
+                    # font_set = {f.name for f in font_manager.fontManager.ttflist}
+                    # for f in font_set:
+                    #     print(f)
+                    # import matplotlib
+                    # matplotlib.rcParams['font.family'] = 'Noto Sans TC'
+                    # # print("===字型路徑", matplotlib.matplotlib_fname())
+                    # import pandas as pd
+                    # df = pd.DataFrame({
+                    #     'Country': ['台灣', '加拿大', '墨西哥'],
+                    #     'Capital': ['Washington D.C.', 'Ottawa', 'Mexico City'],
+                    #     'Population': [3.28200000, 37.590000, 12.6200000]
+                    # })
+                    # df_style = df.style.hide(axis="index")\
+                    #     .set_caption("估算結果僅供參考")
+                    # import dataframe_image as dfi
+                    # dfi.export(df_style, 'dataframe.jpg', table_conversion='matplotlib')
+                    
+                    # 回傳圖片  https://ithelp.ithome.com.tw/articles/10298260?sc=rss.qu
+                    try:
+                        message = [
+                            ImageSendMessage(
+                                original_content_url = url + '/static/' + result_img_name,
+                                preview_image_url = url + '/static/' + result_img_name
+                            ),
+                            # TextSendMessage( #傳文字
+                            #     text = "估算結果僅供參考"
+                            # )
+                        ]
+                        line_bot_api.reply_message(event.reply_token, message)
+                    except:
+                        line_bot_api.reply_message(event.reply_token, TextSendMessage(text='~ 抱歉~找不到圖片 ~'))
+
+            elif event.type == "follow":    # 加入 https://ithelp.ithome.com.tw/articles/10282108
+                user_id = event.source.user_id
+                profile = line_bot_api.get_profile(user_id)
+                user_name = profile.display_name
+            # if event.follow.isUnblocked == "true":    # 是否為解除封鎖  https://developers.line.biz/en/reference/messaging-api/#follow-event
+                #     print("解除封鎖")
+                # print("FOLLOW:", event.follow)
+
+                confirm_template = ConfirmTemplate(
+                    text = f'您好，{user_name}，歡迎加入『9健康』，能請您協助「營養及飲食習慣調查問卷」嗎？',
+                    actions=[
+                        MessageAction(label='是', text='進行調查問卷：是'),
+                        MessageAction(label='否', text='進行調查問卷：否')
+                    ]
+                )
+                reply_msg = TemplateSendMessage(alt_text='是否進行問卷', template=confirm_template)
+                line_bot_api.reply_message(event.reply_token, reply_msg)
+
+            elif event.type == "unfollow":  # 封鎖
+                print("unfollow")
+
+            elif event.type == "join":     # 加入群組
+                print("加入群組")
+
+            elif event.type == "leave":     # 離開
+                print("離開群組")
+
+        return HttpResponse()
+    else:
+        print("POST only.")
+        return HttpResponseBadRequest()
+
